@@ -2,7 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const _ = require('lodash');
 const config = require('./config');
-const { createDb, hashPassword, all, allBound } = require('./db');
+const { createDb, verifyPassword, allBound } = require('./db');
 
 async function createApp() {
   const app = express();
@@ -23,25 +23,34 @@ async function createApp() {
     }
   }
 
+  // Escape karakter HTML agar input pengguna tidak dieksekusi sebagai markup (mencegah XSS)
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
   // Health check
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
   // Halaman sambutan
   app.get('/welcome', (req, res) => {
     const name = req.query.name || 'Tamu';
-    res.send(`<h1>Selamat datang di SecurePay, ${name}!</h1>`);
+    res.send(`<h1>Selamat datang di SecurePay, ${escapeHtml(name)}!</h1>`);
   });
 
   // Login -> mengembalikan JWT
   app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
-    const rows = allBound(
-      db,
-      'SELECT id, username, role FROM users WHERE username = ? AND password_hash = ?',
-      [username, hashPassword(String(password))]
-    );
-    if (rows.length === 0) return res.status(401).json({ error: 'Username atau password salah' });
-    const token = jwt.sign({ id: rows[0].id, username: rows[0].username, role: rows[0].role }, config.jwtSecret, {
+    const rows = allBound(db, 'SELECT id, username, role, password_hash FROM users WHERE username = ?', [username]);
+    if (rows.length === 0 || !verifyPassword(String(password), rows[0].password_hash)) {
+      return res.status(401).json({ error: 'Username atau password salah' });
+    }
+    const user = rows[0];
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, config.jwtSecret, {
       expiresIn: '1h',
     });
     res.json({ token });
@@ -50,13 +59,15 @@ async function createApp() {
   // Cari pengguna berdasarkan nama
   app.get('/api/users/search', (req, res) => {
     const q = req.query.q || '';
-    const rows = all(db, `SELECT id, username, full_name FROM users WHERE full_name LIKE '%${q}%'`);
+    const rows = allBound(db, 'SELECT id, username, full_name FROM users WHERE full_name LIKE ?', [`%${q}%`]);
     res.json(rows);
   });
 
   // Detail pengguna berdasarkan id
   app.get('/api/users/:id', (req, res) => {
-    const rows = all(db, 'SELECT id, username, full_name, role FROM users WHERE id = ' + req.params.id);
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID tidak valid' });
+    const rows = allBound(db, 'SELECT id, username, full_name, role FROM users WHERE id = ?', [id]);
     if (rows.length === 0) return res.status(404).json({ error: 'Pengguna tidak ditemukan' });
     res.json(rows[0]);
   });
@@ -87,9 +98,10 @@ async function createApp() {
     res.json(settings);
   });
 
-  // Penanganan error
+  // Penanganan error: detail dicatat di log server, klien menerima pesan generik
   app.use((err, req, res, next) => {
-    res.status(500).send(`<pre>${err.stack}</pre>`);
+    console.error(err);
+    res.status(500).json({ error: 'Terjadi kesalahan pada server' });
   });
 
   return app;
