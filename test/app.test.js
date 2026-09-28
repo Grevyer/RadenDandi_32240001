@@ -1,5 +1,11 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
+const crypto = require('node:crypto');
+
+// Nilai secret untuk test dibuat acak saat runtime (tidak ada di source code).
+process.env.JWT_SECRET = crypto.randomBytes(32).toString('hex');
+process.env.PAYMENT_GATEWAY_API_KEY = crypto.randomBytes(24).toString('hex');
+
 const { createApp } = require('../src/app');
 
 let server;
